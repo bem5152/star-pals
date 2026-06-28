@@ -355,6 +355,8 @@ let bullets=[], enemies=[], eBullets=[], particles=[], starTokens=[], powerups=[
 
 const UPGRADE_CYCLE = ['starshot','rainbow','shield','speed'];
 let upgradeIdx = 0;
+const BUFF_DUR = 12;     // seconds a power-up boost lasts before fading back to baseline (tune me)
+const BASE_FIRE = 0.30;  // baseline auto-fire interval, seconds (lower = faster)
 
 /* background */
 let starfield=[], nebula=[];
@@ -383,8 +385,9 @@ function startGame(){
   game.shake=0; game.flash=0; game.hint=1; upgradeIdx=0; bossBag=[];
   player = {
     x:W/2, y:H*0.80, r:26,
-    fireTimer:0, fireRate:0.30,
+    fireTimer:0, fireRate:BASE_FIRE,
     weapon:1, rainbow:false, speedMul:1,
+    buff:{ weapon:0, rainbow:0, speed:0, shotLvl:1 }, // seconds remaining on each timed boost
     inv:0, blink:0, look:0, flame:0
   };
   shields=[]; bullets=[]; enemies=[]; eBullets=[];
@@ -551,10 +554,12 @@ function spawnPowerup(x,y,kind,strong){
   powerups.push({ x: strong? W/2 : x, y, vy: strong?28:40, r:24, kind, t:0, col:colors[kind]||'#fff', strong:!!strong });
 }
 function applyUpgrade(kind){
-  if(kind==='starshot'){ player.weapon = Math.min(player.weapon+1, 4); }
-  else if(kind==='rainbow'){ player.rainbow=true; player.weapon=Math.max(player.weapon,3); player.fireRate=Math.min(player.fireRate,0.24); }
-  else if(kind==='shield'){ if(shields.length<3) shields.push({ang:rand(0,TAU)}); }
-  else if(kind==='speed'){ player.speedMul=Math.min(player.speedMul+0.3, 2.2); player.fireRate=Math.max(0.16, player.fireRate*0.9); }
+  const p=player;
+  // power-ups are now temporary boosts (BUFF_DUR seconds) that fade back to baseline
+  if(kind==='starshot'){ p.buff.shotLvl = Math.min((p.buff.weapon>0?p.buff.shotLvl:1)+1, 4); p.buff.weapon = BUFF_DUR; }
+  else if(kind==='rainbow'){ p.buff.rainbow = BUFF_DUR; }
+  else if(kind==='speed'){ p.buff.speed = BUFF_DUR; }
+  else if(kind==='shield'){ if(shields.length<3) shields.push({ang:rand(0,TAU)}); } // shields persist but are used up by hits
   const names={starshot:'STAR SHOT!', rainbow:'RAINBOW BLAST!', shield:'SHIELD BUDDY!', speed:'SPEED BOOST!'};
   banner(names[kind]||'POWER UP!', '#fff');
   sfxPower();
@@ -636,6 +641,24 @@ function update(dt){
 function updatePlay(dt){
   const p=player;
 
+  // ---- timed power-up boosts: count down, then derive effective stats from what's still active ----
+  if(p.buff.weapon>0)  p.buff.weapon  -= dt;
+  if(p.buff.rainbow>0) p.buff.rainbow -= dt;
+  if(p.buff.speed>0)   p.buff.speed   -= dt;
+  if(p.buff.weapon<=0){ p.buff.weapon=0; p.buff.shotLvl=1; } // spread fades back to single shot
+  if(p.buff.rainbow<0) p.buff.rainbow=0;
+  if(p.buff.speed<0)   p.buff.speed=0;
+  const rainbowOn = p.buff.rainbow>0;
+  let wl = p.buff.weapon>0 ? p.buff.shotLvl : 1;
+  if(rainbowOn) wl = Math.max(wl, 3);
+  p.weapon  = wl;
+  p.rainbow = rainbowOn;
+  let rate = BASE_FIRE;
+  if(rainbowOn)        rate *= 0.80;
+  if(p.buff.speed>0)   rate *= 0.62;
+  p.fireRate = Math.max(0.12, rate);
+  p.speedMul = p.buff.speed>0 ? 1.7 : 1;
+
   // ship follows finger (smooth ease)
   const targetX = clamp(pointer.x, p.r, W-p.r);
   const prevX = p.x;
@@ -649,8 +672,8 @@ function updatePlay(dt){
   // hint fades once she moves
   if(Math.abs(p.x - targetX) > 6 || pointer.active) game.hint = Math.max(0, game.hint - dt*1.2);
 
-  // auto-fire
-  const effRate = p.fireRate * (p.rainbow?0.85:1);
+  // auto-fire (fire rate already reflects active boosts)
+  const effRate = p.fireRate;
   p.fireTimer -= dt;
   if(p.fireTimer<=0){ fire(); p.fireTimer = effRate; }
 
@@ -1412,6 +1435,30 @@ function renderHUD(){
     ctx.globalAlpha=game.hint;
     chunkyText('Drag to move! 👆', W/2, H*0.62, 26, '#fff', OUTLINE);
     ctx.globalAlpha=1;
+  }
+  renderBuffMeter();
+}
+
+// little countdown bars for active power-up boosts (yellow=star shot, pink=rainbow, green=speed)
+function renderBuffMeter(){
+  if(!player) return;
+  const items=[];
+  if(player.buff.weapon>0)  items.push({t:player.buff.weapon,  col:'#ffe14d'});
+  if(player.buff.rainbow>0) items.push({t:player.buff.rainbow, col:'#ff6ec7'});
+  if(player.buff.speed>0)   items.push({t:player.buff.speed,   col:'#7bed9f'});
+  if(!items.length) return;
+  const bw=Math.min(150, W*0.30), bh=10, gap=7;
+  const totalH=items.length*(bh+gap)-gap;
+  let y=H-44-totalH;
+  for(const it of items){
+    const bx=W/2 - bw/2;
+    const frac=clamp(it.t/BUFF_DUR,0,1);
+    const blink = it.t<3 && (Math.floor(it.t*6)%2===0); // flash when nearly out
+    drawStarShape(bx-16, y+bh/2, 8, it.col, 0);
+    roundRect(bx-3,y-3,bw+6,bh+6,8); ctx.fillStyle=OUTLINE; ctx.fill();
+    roundRect(bx,y,bw,bh,6); ctx.fillStyle='rgba(0,0,0,0.32)'; ctx.fill();
+    if(!blink && frac>0){ roundRect(bx,y,bw*frac,bh,6); ctx.fillStyle=it.col; ctx.fill(); }
+    y+=bh+gap;
   }
 }
 
